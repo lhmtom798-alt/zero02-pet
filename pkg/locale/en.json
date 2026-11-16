@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "02 Desktop Pet (2D / 3D)",
+    "description": "A desktop companion in the bottom-right corner: four characters (Onee / Genki / Chibi / Whaley) in both 2D illustration and real-time 3D figurine form. Click to pat, right-drag to orbit, drag anywhere; chat via local Ollama or the DeepSeek API. Switch form, size, quality and model in Settings.",
+    "detail": "docs/DETAIL.en.md"
+  }
+}

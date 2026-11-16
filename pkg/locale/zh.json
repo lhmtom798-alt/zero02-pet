@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "02 桌宠（2D / 3D）",
+    "description": "桌面右下角的 02 桌宠：四个形象（御姐 / 元气 / Q版 / 鲸鲸）、2D 立绘与 3D 手办双形态；单击拍一拍、右键转视角、把她拖到任意位置，聊天走本地 Ollama 或 DeepSeek API。在「设置」里切换形态、大小、画质与模型。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}
