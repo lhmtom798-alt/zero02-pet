@@ -1,0 +1,27 @@
+# ── 第三方版权素材：禁止提交 ─────────────────────────────
+models/*
+!models/README.md
+_assets/*
+!_assets/README.md
+
+# ── 构建产物 / 安装包 ──────────────────────────────────
+zero02-pet/
+dist/
+lab/bundle.js
+*.tgz
+
+# ── 开发临时文件 ────────────────────────────────────────
+node_modules/
+shots/
+pkg/docs/preview.svg
+*_preview.png
+.DS_Store
+*.log
+*.pyc
+__pycache__/
+
+# 旧的实验文件（不参与构建）
+_engine.js
+_skins.js
+preview/*
+!preview/index.html
