@@ -1,0 +1,200 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MMD 角色（pet 渲染管线）</title>
+<style>
+  html,body{margin:0;height:100%;background:radial-gradient(120% 90% at 50% 18%,#2b2140,#140f1f);overflow:hidden}
+  #stage{position:absolute;inset:0}
+  #err{position:fixed;inset:0;padding:20px;color:#f88;font:13px/1.5 monospace;white-space:pre-wrap;display:none;background:#140f1c;z-index:9}
+  #hint{position:fixed;left:12px;bottom:10px;color:#9a8fb0;font:12px sans-serif}
+</style></head>
+<body>
+<div id="stage"></div><div id="hint">loading…</div><pre id="err"></pre>
+<script src="/vendor/three-vrm.global.js"></script>
+<script>
+/* ============================================================================
+ * lab/mmd-char.html —— 用「桌宠真实渲染管线」看 MMD 角色（mmdchar + mmd-shade + stage）。
+ *
+ * 为什么需要它：lab/mmd-preview.html 是最朴素的 MMDLoader 直出（灯光很亮、没有赛璐璐质感、
+ * 没有头发/裙摆物理、没有待机动画），只能看静态。这里把插件里真正用的
+ *   src/3d/kit.js / stage.js / mmd-shade.js / mmdchar.js
+ * 原样加载进来（浏览器里 fetch + 极小 __def/__req），所以看到的画面、骨骼动画、物理、
+ * 取景和桌宠完全一致 —— 用于 TDA/Darling 同机位对比与骨骼修复验收。
+ *
+ * 参数：
+ *   base= 贴图&PMX 基础目录 URL（默认 /models/mmd/Darling02/）
+ *   file= PMX 文件名（默认 ZeroTwo_GameStyle.pmx）
+ *   state= idle|pat|happy|talk|sleep|eat|stretch|shy   （mmdchar 的动画状态）
+ *   t=    预演秒数（默认 0.6）。冻结后截图 → 结果稳定可复现
+ *   freeze=0 则不冻结（实时动画）
+ *   yaw=  整体水平旋转（弧度）
+ *   az= el= camY= distK=  相机轨道/距离（同 stage.hard）
+ *   bone= 左腕=0,0,1.2;右腕=0,0,-1.2   手动摆骨（在预演结束后应用，直接写 rotation）
+ *   armIdle= armForwardX= headScale= idleWave=1  shade=anime|soft|off  （同 mmdchar 配置）
+ *   height= margin= elev=   stage.frame 参数
+ *   info=1  把状态打进 #hint（截图里可见）
+ * ========================================================================== */
+(function () {
+  "use strict";
+  var V = new URLSearchParams(location.search);
+  var THREE = window.THREE;
+  function fail(e) {
+    var el = document.getElementById('err');
+    el.style.display = 'block';
+    el.textContent = 'LAB ERROR\n' + ((e && (e.stack || e.message)) || e);
+    window.__LAB_READY = true;
+    window.__LAB_ERR = String((e && e.message) || e);
+  }
+  window.addEventListener('error', function (ev) { fail(ev.error || ev.message); });
+  window.addEventListener('unhandledrejection', function (ev) { fail(ev.reason); });
+
+  // 极小模块系统（和 build.py 生成的 __def/__req 语义一致）
+  var __REG = Object.create(null), __CACHE = Object.create(null);
+  function __def(name, fn) { __REG[name] = fn; }
+  function __req(name) {
+    if (__CACHE[name]) return __CACHE[name].exports;
+    var fn = __REG[name];
+    if (!fn) throw new Error("模块未定义: " + name + "（可用: " + Object.keys(__REG).join(",") + "）");
+    var mod = { exports: {} };
+    __CACHE[name] = mod;
+    try { fn(mod, mod.exports, __req); } catch (e) { delete __CACHE[name]; throw e; }
+    return mod.exports;
+  }
+  window.__labRequire = __req;
+  // mmdchar.js 里直接调全局 __req("mmd-shade")（插件里模块和 RAW 同作用域），这里也暴露到全局
+  window.__req = __req;
+  window.__def = __def;
+
+  function loadModule(name, url) {
+    return fetch(url, { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('加载失败 ' + url + ' HTTP ' + r.status);
+      return r.text();
+    }).then(function (src) {
+      __def(name, new Function('module', 'exports', 'require', src + '\n//# sourceURL=' + url));
+    });
+  }
+
+  // 可选模块：存在才加载（mmd-hair 是后来的程序化发丝模块，缺了 mmdchar 会降级）
+  function loadOptional(name, url) {
+    return loadModule(name, url).catch(function () { return null; });
+  }
+  Promise.all([
+    loadModule('kit', '/src/3d/kit.js'),
+    loadModule('stage', '/src/3d/stage.js'),
+    loadModule('mmd-shade', '/src/3d/mmd-shade.js'),
+    loadOptional('mmd-hair', '/src/3d/mmd-hair.js'),
+    loadModule('mmdchar', '/src/3d/mmdchar.js')
+  ]).then(start).catch(fail);
+
+  function start() {
+    var host = document.getElementById('stage');
+    var hint = document.getElementById('hint');
+    var K = __req('kit').create(THREE);
+    var stage = __req('stage').create({ THREE: THREE, K: K, host: host, quality: 'high' });
+    stage.setSize(host.clientWidth, host.clientHeight);
+    var MMD = __req('mmdchar').create({ THREE: THREE, K: K, stage: stage, models: {} });
+
+    var base = V.get('base') || '/models/mmd/Darling02/';
+    var file = V.get('file') || 'ZeroTwo_GameStyle.pmx';
+    var cfg = {
+      url: base + file, textureBase: base,
+      label: V.get('label') || '02',
+      height: parseFloat(V.get('height') || '5.0'),
+      armIdle: parseFloat(V.get('armIdle') || '1.14'),
+      armForwardX: parseFloat(V.get('armForwardX') || '-0.12'),
+      shadeOpts: { gradeTextures: false },
+      glowColor: 0xff6f96,
+      camera: { margin: parseFloat(V.get('margin') || '1.04'), elevation: parseFloat(V.get('elev') || '0.05') }
+    };
+    if (V.get('shade')) cfg.shade = V.get('shade');
+    if (V.get('idleWave') === '1') cfg.idleWave = true;
+    var headScale = parseFloat(V.get('headScale') || '0');
+    if (headScale > 0) cfg.headScale = headScale;
+    MMD.setModels({ char: cfg });
+
+    var char = MMD.build('char');
+    stage.root.add(char.root);
+    var yaw = parseFloat(V.get('yaw') || '0');
+    char.root.rotation.y = yaw;
+    var state = V.get('state') || 'idle';
+    char.setState(state);
+
+    char.mountPromise.then(function () {
+      stage.frame({
+        height: char.height,
+        bboxW: char.height * 0.30, bboxH: char.height * 1.10,
+        bboxMinY: 0, bboxMaxY: char.height,
+        margin: cfg.camera.margin, elevation: cfg.camera.elevation, glowColor: cfg.glowColor
+      });
+      stage.setSize(host.clientWidth, host.clientHeight);
+      var camY = parseFloat(V.get('camY') || '0');
+      var zoom = parseFloat(V.get('zoom') || '1');
+      if (V.get('az') || V.get('el') || camY || zoom !== 1 || V.get('distK')) {
+        var d = stage.state && stage.state.dist ? stage.state.dist * zoom : null;
+        if (V.get('distK')) d = d * parseFloat(V.get('distK'));
+        stage.hard(parseFloat(V.get('az') || '0'), parseFloat(V.get('el') || '0.05'), d, camY || null);
+      }
+      // 预演 t 秒，让动画/弹簧/头发物理走到稳定状态（确定性截图）
+      var simT = parseFloat(V.get('t') || '0.6');
+      var step = 1 / 60;
+      var steps = Math.max(0, Math.round(simT / step));
+      for (var i = 0; i < steps; i++) char.update(step);
+      // 手动摆骨：在预演之后写，避免被动画覆盖
+      var bp = V.get('bone');
+      var posed = [];
+      if (bp) bp.split(';').forEach(function (pair) {
+        var kv = pair.split('=');
+        if (kv.length !== 2) return;
+        var b = char._bones[kv[0]];
+        if (!b) { posed.push(kv[0] + ':missing'); return; }
+        var v = kv[1].split(',').map(Number);
+        b.rotation.set(v[0] || 0, v[1] || 0, v[2] || 0);
+        posed.push(kv[0] + '=' + v.join(','));
+      });
+      var freeze = V.get('freeze') !== '0';
+      // 探针：把指定骨骼的世界坐标打出来（骨骼修复验收用：转 A 骨时 B 骨不该动）
+      var probeNames = (V.get('probe') || '頭,首,上半身,左手首,右手首,左ひじ,右ひじ,左足,右足').split(',').filter(Boolean);
+      function probe() {
+        char.root.updateMatrixWorld(true);
+        var out = {};
+        probeNames.forEach(function (n) {
+          var b = char._bones[n];
+          if (!b) { out[n] = null; return; }
+          var v = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld);
+          out[n] = [+v.x.toFixed(4), +v.y.toFixed(4), +v.z.toFixed(4)];
+        });
+        return out;
+      }
+      var last = performance.now();
+      function loop(now) {
+        requestAnimationFrame(loop);
+        var dt = Math.min(0.05, (now - last) / 1000) || 0.016;
+        last = now;
+        if (!freeze) char.update(dt);
+        stage.tick(dt);
+        stage.render();
+      }
+      requestAnimationFrame(loop);
+      stage.updateMatrixWorld && stage.updateMatrixWorld();
+      stage.render();
+      var boneMap = {};
+      (char._bones ? Object.keys(char._bones) : []).forEach(function (n) { boneMap[n] = char._bones[n]; });
+      var probeVals = probe();
+      window.__LAB = {
+        char: char, stage: stage, MMD: MMD, boneMap: boneMap,
+        height: char.height, state: state, yaw: yaw, base: base, file: file,
+        animState: char.animState ? char.animState() : null,
+        posed: posed,
+        probe: probeVals,
+        hairCount: char._hair ? char._hair.length : 0,
+        skirtCount: char._skirt ? char._skirt.length : 0,
+        boneCount: char._bones ? Object.keys(char._bones).length : 0,
+        boneList: char._bones ? Object.keys(char._bones) : []
+      };
+      hint.textContent = file + ' h=' + char.height.toFixed(2) +
+        ' state=' + state + ' bones=' + window.__LAB.boneCount +
+        ' hair=' + window.__LAB.hairCount + ' skirt=' + window.__LAB.skirtCount;
+      window.__LAB_READY = true;
+    }).catch(fail);
+  }
+})();
+</script>
+</body></html>

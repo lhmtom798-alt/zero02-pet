@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>VRM 快速预览</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: radial-gradient(120% 90% at 50% 18%, #2b2140, #140f1f); }
+  #stage { position: absolute; inset: 0; }
+  #err { position: fixed; inset: 0; padding: 20px; color: #ff8fa3; font: 13px/1.5 ui-monospace; white-space: pre-wrap; display: none; background: #140f1c; z-index: 99; }
+  .hint { position: fixed; left: 12px; bottom: 10px; color: #6d6380; font: 12px/1.5 ui-sans-serif; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="hint" id="hint">loading…</div>
+<pre id="err"></pre>
+<script src="/vendor/three-vrm.global.js"></script>
+<script>
+  (function () {
+    var V = new URLSearchParams(location.search);
+    var model = V.get("model") || "/models/seed-san.vrm";
+    var az = parseFloat(V.get("az") || "0");
+    var el = parseFloat(V.get("el") || "0.06");
+    var state = V.get("state") || "idle";
+    var zoom = parseFloat(V.get("zoom") || "1");
+    var bg = V.get("bg") || "dark";
+    if (bg === "transparent") { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; }
+    var THREE = window.THREE;
+    var V3 = THREE.Vector3;
+    var renderer, scene, camera, vrm = null;
+    var clock = new THREE.Clock();
+
+    function fail(e) {
+      var el2 = document.getElementById("err");
+      el2.style.display = "block";
+      el2.textContent = "VRM PREVIEW ERROR\n" + (e && (e.stack || e.message) || e);
+      window.__LAB_READY = true;
+    }
+    window.addEventListener("error", function (ev) { fail(ev.error || ev.message); });
+
+    try {
+      var host = document.getElementById("stage");
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      renderer.setSize(host.clientWidth, host.clientHeight);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.NoToneMapping;
+      renderer.setClearColor(0x000000, 0);
+      host.appendChild(renderer.domElement);
+
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(26, host.clientWidth / host.clientHeight, 0.01, 100);
+      // MToon 需要灯光
+      var hemi = new THREE.HemisphereLight(0xffffff, 0x8899aa, 1.6);
+      scene.add(hemi);
+      var key = new THREE.DirectionalLight(0xffffff, 2.2);
+      key.position.set(1.2, 3.0, 2.4);
+      scene.add(key);
+      var rim = new THREE.DirectionalLight(0xffc0d8, 1.1);
+      rim.position.set(-2.0, 1.4, -1.6);
+      scene.add(rim);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+
+      var loader = new THREE_VRM.GLTFLoader();
+      loader.register(function (parser) { return new THREE_VRM.VRMLoaderPlugin(parser); });
+      loader.load(model, function (gltf) {
+        vrm = gltf.userData.vrm;
+        if (!vrm) throw new Error("不是 VRM: " + model);
+        THREE_VRM.VRMUtils.removeUnnecessaryVertices(gltf.scene);
+        THREE_VRM.VRMUtils.removeUnnecessaryJoints(gltf.scene);
+        // 朝向：VRM 模型默认面向 -Z（three-vrm 约定），转到 +Z 让相机在 +Z 看向它
+        vrm.scene.rotation.y = parseFloat(V.get("yaw") || "0");
+        scene.add(vrm.scene);
+
+        // 取景
+        var box = new THREE.Box3().setFromObject(vrm.scene);
+        var size = new V3(); box.getSize(size);
+        var center = new V3(); box.getCenter(center);
+        var h = size.y;
+        var dist = (h / (2 * Math.tan(26 * Math.PI / 360))) * 1.08 * zoom;
+        var tyFrac = parseFloat(V.get("ty") || "0.5");
+        var ty = box.min.y + h * tyFrac;
+        camera.position.set(Math.sin(az) * Math.cos(el) * dist, ty + Math.sin(el) * dist, Math.cos(az) * Math.cos(el) * dist);
+        camera.lookAt(0, ty, 0);
+        document.getElementById("hint").textContent = model + " · h=" + h.toFixed(2) + " · mats=" + countMats(vrm.scene);
+        window.__LAB = {
+          vrm: vrm, scene: scene, camera: camera, renderer: renderer,
+          info: info, bbox: { w: size.x, h: size.y, d: size.z, minY: box.min.y, maxY: box.max.y },
+          setExpr: function (name, w) { if (vrm.expressionManager) vrm.expressionManager.setValue(name, w); },
+          setState: applyState, rotate: function (y) { vrm.scene.rotation.y = y; },
+        };
+        poseIdle(vrm);
+        var headScale = parseFloat(V.get("head") || "0");
+        if (headScale > 0) {
+          var hb2 = vrm.humanoid;
+          var hn = hb2.getNormalizedBoneNode("head");
+          if (hn) hn.scale.setScalar(headScale);
+          var chest2 = hb2.getNormalizedBoneNode("chest");
+          if (chest2) chest2.scale.setScalar(1 + (headScale - 1) * 0.12);
+        }
+        if (V.get("props")) addProps(V.get("props"));
+        if (V.get("style")) applyStyle(V.get("style"));
+        applyState(state);
+        window.__LAB_READY = true;
+      }, undefined, fail);
+    } catch (e) { fail(e); }
+
+    function countMats(root) { var n = 0; root.traverse(function (o) { if (o.isMesh) n++; }); return n; }
+    function info() {
+      var out = { meshes: [], mats: [], expressions: [], bones: [] };
+      vrm.scene.traverse(function (o) {
+        if (o.isMesh) out.meshes.push({ name: o.name, mat: (o.material && o.material.name) || "", type: o.material && o.material.type });
+      });
+      if (vrm.expressionManager) out.expressions = vrm.expressionManager.expressions.map(function (e) { return e.expressionName; });
+      if (vrm.humanoid) out.bones = Object.keys(vrm.humanoid.humanBones).filter(function (k) { return vrm.humanoid.getNormalizedBoneNode && vrm.humanoid.getNormalizedBoneNode(k); });
+      return out;
+    }
+    function poseIdle(v) {
+      try {
+        var hb = v.humanoid;
+        function rot(bone, x, y, z) {
+          var n = hb.getNormalizedBoneNode(bone);
+          if (n) n.rotation.set(x || 0, y || 0, z || 0);
+        }
+        // 手臂自然下垂（VRM 归一化骨骼是 T-pose，绕 Z 轴向下）
+        rot("leftUpperArm", 0, 0, 1.28);
+        rot("rightUpperArm", 0, 0, -1.28);
+        rot("leftLowerArm", 0, 0.18, 0.12);
+        rot("rightLowerArm", 0, -0.18, -0.12);
+        rot("leftHand", 0, 0, 0.1);
+        rot("rightHand", 0, 0, -0.1);
+        // 稍微内八/自然站姿
+        rot("leftUpperLeg", 0, 0.02, 0.02);
+        rot("rightUpperLeg", 0, -0.02, -0.02);
+      } catch (e) {}
+    }
+    /* ===== 换色实验：HSL 重映射贴图（保留明暗细节，只改色相/饱和/亮度） ===== */
+    function recolorTexture(tex, opt) {
+      try {
+        var img = tex.image;
+        if (!img || !img.width) return tex;
+        var c = document.createElement("canvas");
+        c.width = img.width; c.height = img.height;
+        var ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        var data = ctx.getImageData(0, 0, c.width, c.height);
+        var d = data.data;
+        var targetH = opt.hue == null ? null : opt.hue;   // 0..1
+        var satMul = opt.satMul == null ? 1 : opt.satMul;
+        var lumMul = opt.lumMul == null ? 1 : opt.lumMul;
+        var lift = opt.lift == null ? 0 : opt.lift;
+        for (var i = 0; i < d.length; i += 4) {
+          var r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+          var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+          var l = (mx + mn) / 2, hh = 0, ss = 0;
+          if (mx !== mn) {
+            var dd = mx - mn;
+            ss = l > 0.5 ? dd / (2 - mx - mn) : dd / (mx + mn);
+            if (mx === r) hh = ((g - b) / dd + (g < b ? 6 : 0)) / 6;
+            else if (mx === g) hh = ((b - r) / dd + 2) / 6;
+            else hh = ((r - g) / dd + 4) / 6;
+          }
+          if (targetH != null) hh = targetH;
+          ss = Math.min(1, ss * satMul);
+          l = Math.min(1, Math.max(0, l * lumMul + lift));
+          // hsl -> rgb
+          var q = l < 0.5 ? l * (1 + ss) : l + ss - l * ss;
+          var p2 = 2 * l - q;
+          function hue2rgb(p3, q3, t3) {
+            if (t3 < 0) t3 += 1; if (t3 > 1) t3 -= 1;
+            if (t3 < 1 / 6) return p3 + (q3 - p3) * 6 * t3;
+            if (t3 < 1 / 2) return q3;
+            if (t3 < 2 / 3) return p3 + (q3 - p3) * (2 / 3 - t3) * 6;
+            return p3;
+          }
+          d[i] = Math.round(hue2rgb(p2, q, hh + 1 / 3) * 255);
+          d[i + 1] = Math.round(hue2rgb(p2, q, hh) * 255);
+          d[i + 2] = Math.round(hue2rgb(p2, q, hh - 1 / 3) * 255);
+        }
+        ctx.putImageData(data, 0, 0);
+        var out = new THREE.CanvasTexture(c);
+        out.colorSpace = THREE.SRGBColorSpace;
+        out.flipY = tex.flipY;
+        out.wrapS = tex.wrapS; out.wrapT = tex.wrapT;
+        out.repeat.copy(tex.repeat); out.offset.copy(tex.offset);
+        out.needsUpdate = true;
+        return out;
+      } catch (e) { console.warn("recolor fail", e); return tex; }
+    }
+
+    function texMean(tex) {
+      try {
+        var img = tex.image;
+        if (!img || !img.width) return null;
+        var c = document.createElement("canvas");
+        c.width = 32; c.height = 32;
+        var ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0, 32, 32);
+        var d = ctx.getImageData(0, 0, 32, 32).data;
+        var r = 0, g = 0, b = 0, n = 0;
+        for (var i = 0; i < d.length; i += 4) { if (d[i + 3] < 20) continue; r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; }
+        if (!n) return null;
+        return { r: r / n / 255, g: g / n / 255, b: b / n / 255, l: (r + g + b) / 3 / 255 };
+      } catch (e) { return null; }
+    }
+
+    function applyStyle(kind) {
+      if (!vrm) return;
+      var mats = vrm.materials || [];
+      var seen = {};
+      mats.forEach(function (m) {
+        if (!m || seen[m.uuid]) return;
+        seen[m.uuid] = 1;
+        var name = (m.name || "").toLowerCase();
+        var isHair = /hair/.test(name);
+        var isEye = /eye(iris)?|iris/.test(name) && !/eyelash|eyeline|eyebrow/.test(name);
+        var isFace = /face|brow|lash|mouth|eyeline/.test(name);
+        if (kind === "shino02") {
+          if (isHair) {
+            m.map = recolorTexture(m.map, { hue: 0.93, satMul: 1.25, lumMul: 1.55, lift: 0.10 }); // 粉
+            m.color.set(0xffffff);
+            if (m.shadeColorFactor) m.shadeColorFactor.set(0xd86d9e);
+          } else if (isEye) {
+            m.map = recolorTexture(m.map, { hue: 0.44, satMul: 2.2, lumMul: 1.05 }); // 青绿
+          } else if (!isFace) {
+            var mean = m.map ? texMean(m.map) : null;
+            if (mean && mean.l > 0.62) {
+              // 浅色（白衬衫）→ 保持白，稍微加暖
+              m.map = recolorTexture(m.map, { hue: 0.04, satMul: 0.35, lumMul: 1.0 });
+            } else if (mean) {
+              // 深色（背心/裙子/靴）→ 红
+              m.map = recolorTexture(m.map, { hue: 0.99, satMul: 2.6, lumMul: 1.15, lift: 0.02 });
+              if (m.shadeColorFactor) m.shadeColorFactor.set(0x7a1526);
+            }
+          }
+        }
+        if (V.get("outline") === "1" && m.isMToonMaterial) {
+          try { m.outlineWidthMode = "screenCoordinates"; m.outlineWidthFactor = 0.0035; m.outlineColorFactor.set(0x2a1820); } catch (e) {}
+        }
+        m.needsUpdate = true;
+      });
+    }
+
+
+    /* ===== 3D 小配件：红角 / 白王冠发带 / 贝雷帽 / 女仆头饰 ===== */
+    function makeToonMat(color, shade) {
+      var m = new THREE.MeshToonMaterial({ color: color });
+      m.userData.shade = shade;
+      return m;
+    }
+    function hornGeo() {
+      // 弯一点的小角：用车削做锥形再弯折顶点
+      var pts = [];
+      for (var i = 0; i <= 10; i++) {
+        var t = i / 10;
+        pts.push(new THREE.Vector2(0.030 * (1 - t) + 0.001, t * 0.115));
+      }
+      var g = new THREE.LatheGeometry(pts, 14);
+      var pos = g.attributes.position;
+      for (var j = 0; j < pos.count; j++) {
+        var y = pos.getY(j);
+        pos.setX(j, pos.getX(j) + y * y * 1.6);
+      }
+      g.computeVertexNormals();
+      return g;
+    }
+    function addProps(kind) {
+      var hb = vrm.humanoid;
+      var head = hb.getRawBoneNode("head");
+      if (!head) return;
+      var group = new THREE.Group();
+      group.name = "pet-props";
+      function place(obj, x, y, z) { obj.position.set(x, y, z); group.add(obj); return obj; }
+      if (kind === "onee" || kind === "genki") {
+        var red = new THREE.MeshToonMaterial({ color: 0xef4458 });
+        var lh = new THREE.Mesh(hornGeo(), red);
+        lh.position.set(-0.075, 0.105, 0.03); lh.rotation.z = 0.38; lh.rotation.x = -0.15;
+        var rh = new THREE.Mesh(hornGeo(), red);
+        rh.position.set(0.075, 0.105, 0.03); rh.rotation.z = -0.38; rh.rotation.x = -0.15;
+        group.add(lh, rh);
+        if (kind === "onee") {
+          var band = new THREE.Mesh(new THREE.TorusGeometry(0.105, 0.011, 8, 28, Math.PI * 1.25), new THREE.MeshToonMaterial({ color: 0xfff4f2 }));
+          band.rotation.x = Math.PI / 2 - 0.35;
+          band.rotation.z = Math.PI * 0.12;
+          band.position.y = 0.055;
+          group.add(band);
+        } else {
+          // 贝雷帽：压扁的球 + 帽檐
+          var beret = new THREE.Mesh(new THREE.SphereGeometry(0.115, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), new THREE.MeshToonMaterial({ color: 0xfff6ee }));
+          beret.scale.y = 0.55;
+          beret.position.set(0, 0.085, 0.005);
+          beret.rotation.x = 0.12;
+          var brim = new THREE.Mesh(new THREE.TorusGeometry(0.112, 0.012, 8, 24), new THREE.MeshToonMaterial({ color: 0xf6e6dc }));
+          brim.rotation.x = Math.PI / 2;
+          brim.position.y = 0.062;
+          group.add(beret, brim);
+        }
+      }
+      if (kind === "whale") {
+        var white = new THREE.MeshToonMaterial({ color: 0xf7fbff });
+        var headdress = new THREE.Mesh(new THREE.TorusGeometry(0.108, 0.016, 8, 28), white);
+        headdress.rotation.x = Math.PI / 2;
+        headdress.position.y = 0.085;
+        group.add(headdress);
+        for (var i = 0; i < 8; i++) {
+          var a = (i / 8) * Math.PI * 2;
+          var puff = new THREE.Mesh(new THREE.SphereGeometry(0.022, 10, 8), white);
+          puff.position.set(Math.cos(a) * 0.108, 0.085, Math.sin(a) * 0.108);
+          group.add(puff);
+        }
+      }
+      head.add(group);
+    }
+
+    function applyState(name) {
+      if (!vrm || !vrm.expressionManager) return;
+      var em = vrm.expressionManager;
+      ["happy", "angry", "sad", "relaxed", "surprised", "blink"].forEach(function (n) { try { em.setValue(n, 0); } catch (e) {} });
+      if (name === "happy") { try { em.setValue("happy", 1); } catch (e) {} }
+      if (name === "sleep") { try { em.setValue("blink", 1); } catch (e) {} }
+      if (name === "shy") { try { em.setValue("relaxed", 0.8); } catch (e) {} }
+      if (name === "wink") { try { em.setValue("happy", 0.8); } catch (e) {} }
+    }
+
+    var t = 0;
+    function loop() {
+      requestAnimationFrame(loop);
+      var dt = Math.min(0.05, clock.getDelta());
+      t += dt;
+      if (vrm) {
+        vrm.update(dt);
+        // 轻微呼吸
+        if (vrm.humanoid) {
+          var chest = vrm.humanoid.getNormalizedBoneNode("chest");
+          if (chest) chest.rotation.x = Math.sin(t * 2.0) * 0.02;
+        }
+      }
+      renderer.render(scene, camera);
+    }
+    loop();
+    window.addEventListener("resize", function () {
+      var h2 = document.getElementById("stage");
+      renderer.setSize(h2.clientWidth, h2.clientHeight);
+      camera.aspect = h2.clientWidth / h2.clientHeight;
+      camera.updateProjectionMatrix();
+    });
+  })();
+</script>
+</body>
+</html>

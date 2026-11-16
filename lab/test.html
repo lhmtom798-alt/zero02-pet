@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8" /><title>three smoke test</title>
+<style>html,body{margin:0;height:100%;background:radial-gradient(circle at 50% 30%,#2b2340,#0d0a14)}</style>
+</head>
+<body>
+<div id="root" style="position:absolute;inset:0"></div>
+<script src="/vendor/three.global.js"></script>
+<script>
+  try {
+    const T = window.THREE;
+    const root = document.getElementById("root");
+    const renderer = new T.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, devicePixelRatio || 1));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = T.SRGBColorSpace;
+    root.appendChild(renderer.domElement);
+    const scene = new T.Scene();
+    const cam = new T.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
+    cam.position.set(0, 0.2, 4);
+    cam.lookAt(0, 0, 0);
+    scene.add(new T.AmbientLight(0xffffff, 1.6));
+    const d = new T.DirectionalLight(0xffffff, 2.2); d.position.set(2, 3, 2); scene.add(d);
+    const mat = new T.MeshToonMaterial({ color: 0xff7a9c });
+    const sphere = new T.Mesh(new T.SphereGeometry(1, 48, 32), mat);
+    scene.add(sphere);
+    const box = new T.Mesh(new T.BoxGeometry(0.5, 0.5, 0.5), new T.MeshToonMaterial({ color: 0x7ad6ff }));
+    box.position.set(1.3, 0.4, 0); box.rotation.set(0.4, 0.6, 0.2); scene.add(box);
+    renderer.render(scene, cam);
+    window.__LAB_READY = true;
+    window.__LAB_INFO = { three: T.REVISION, renderer: renderer.capabilities.isWebGL2 ? "webgl2" : "webgl1" };
+  } catch (e) {
+    document.body.innerHTML = '<pre style="color:#f66;font:14px monospace;padding:20px">' + (e && e.stack || e) + "</pre>";
+    window.__LAB_READY = true;
+  }
+</script>
+</body>
+</html>

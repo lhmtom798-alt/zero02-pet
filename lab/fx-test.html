@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>fx / sfx 验收 · 真实源码</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #140f1d; }
+  body { background: radial-gradient(120% 100% at 50% 8%, #2b2038 0%, #1a1326 48%, #120d1a 100%); }
+  #stage { position: absolute; inset: 0; }
+  #hud {
+    position: fixed; left: 12px; top: 10px; z-index: 9;
+    color: #bdaed6; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,.7);
+    max-width: 640px;
+  }
+  #hud b { color: #ffd0e0; font-weight: 700; }
+  #hud .ok { color: #9ee8b8; }
+  #hud .bad { color: #ff8fa3; }
+  body.small #hud { display: none; }
+  #fallbackNote { color: #ffcf8f; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud">loading…</div>
+<script src="/vendor/three.global.js"></script>
+<script>
+/**
+ * fx / sfx 浏览器验收页。
+ *
+ * 重点：这里没有复制任何实现。页面用 fetch 读取 /src/3d/*.js 的真实源码，
+ * 再用一个 10 行的 CommonJS 装载器（new Function(module, exports, require)）执行，
+ * 所以测到的就是交付文件本身；build.py 只是把它们再包一层 __def/__req。
+ *
+ * 用法：
+ *   /lab/fx-test.html?kind=hearts              单特效（自动锚点）
+ *   /lab/fx-test.html?kinds=hearts,sparkles    多特效同时发射
+ *   /lab/fx-test.html?kind=bubbles&state=happy 指定角色状态
+ *   /lab/fx-test.html?mode=small&kind=hearts   220px 小窗观感
+ *   /lab/fx-test.html?mode=sfx                 WebAudio 冒烟测试（全部 10 个音）
+ */
+(function () {
+  "use strict";
+
+  var params = new URLSearchParams(location.search);
+  var mode = params.get("mode") || "single";
+  var kindsParam = params.get("kinds") || params.get("kind") || "hearts";
+  var kinds = kindsParam.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+  var wantState = params.get("state") || "";
+  var errors = [];
+  var stageHost = document.getElementById("stage");
+  var hudEl = document.getElementById("hud");
+  var THREE = window.THREE;
+  var notes = [];
+
+  if (mode === "small") document.body.classList.add("small");
+  if (!THREE) {
+    hudEl.textContent = "THREE 未加载（需要 /vendor/three.global.js）";
+    window.__FX_READY = true;
+    return;
+  }
+
+  function logErr(where, e) {
+    var msg = where + ": " + (e && (e.stack || e.message) || e);
+    errors.push(msg);
+    try { console.error("[fx-test] " + msg); } catch (e2) {}
+  }
+  window.addEventListener("error", function (ev) { errors.push("window.error: " + (ev.message || "")); });
+  window.addEventListener("unhandledrejection", function (ev) {
+    errors.push("unhandledrejection: " + ((ev.reason && (ev.reason.stack || ev.reason.message)) || ev.reason));
+  });
+
+  /* ------------------- 微型 CommonJS 装载器（加载真实源码） ------------------- */
+  var defs = Object.create(null);
+  var cache = Object.create(null);
+  function load(name, url) {
+    return fetch(url, { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error(url + " HTTP " + r.status);
+      return r.text();
+    }).then(function (src) {
+      defs[name] = new Function("module", "exports", "require", src + "\n//# sourceURL=" + url);
+    });
+  }
+  function req(name) {
+    if (cache[name]) return cache[name].exports;
+    var fn = defs[name];
+    if (!fn) throw new Error("模块未定义: " + name);
+    var mod = { exports: {} };
+    cache[name] = mod;
+    fn(mod, mod.exports, req);
+    return mod.exports;
+  }
+  function loadOne(name, file) {
+    return load(name, "/src/3d/" + file).then(
+      function () { return { name: name, ok: true }; },
+      function (e) { return { name: name, ok: false, err: String(e && e.message || e) }; }
+    );
+  }
+
+  /* ------------------- 无 WebGL 模块时的兜底小舞台 ------------------- */
+  function fallbackStage(THREE, host) {
+    var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x000000, 0);
+    renderer.domElement.style.cssText = "width:100%;height:100%;display:block;pointer-events:none;";
+    host.appendChild(renderer.domElement);
+    var scene = new THREE.Scene();
+    var camera = new THREE.PerspectiveCamera(26, 1, 0.05, 200);
+    var root = new THREE.Group();
+    scene.add(root);
+    var cy = 2.2, dist = 10;
+    camera.position.set(0, cy + Math.sin(0.09) * dist, Math.cos(0.09) * dist);
+    camera.lookAt(0, cy, 0);
+    return {
+      renderer: renderer, scene: scene, camera: camera, root: root,
+      frame: function () {},
+      setSize: function (w, h) {
+        renderer.setSize(Math.max(1, w), Math.max(1, h), false);
+        camera.aspect = Math.max(1, w) / Math.max(1, h);
+        camera.updateProjectionMatrix();
+      },
+      tick: function () {},
+      render: function () { renderer.render(scene, camera); },
+      dispose: function () { try { renderer.dispose(); } catch (e) {} },
+    };
+  }
+
+  /* ------------------- 兜底小人（角色模块加载失败时） ------------------- */
+  function fallbackFigure(K, THREE) {
+    var root = new THREE.Group();
+    var skin = K.cel({ color: 0xffdcc4, shade: 0xf3b6a8, rim: 0xffd0e0, lift: 0.6 });
+    var hair = K.cel({ color: 0xf3a3c7, shade: 0xcb74a2, hi: 0xffd9ea });
+    var coat = K.cel({ color: 0xcf2b41, shade: 0x8c1a31 });
+    var head = new THREE.Mesh(K.sphere(1.0, 1.03, 0.98, 1.0, 32), skin);
+    head.position.y = 3.42;
+    K.outline(head, { thickness: 0.012 });
+    root.add(head);
+    var cap = new THREE.Mesh(K.sphere(1.05, 1.02, 0.9, 1.02, 24), hair);
+    cap.position.y = 3.55;
+    root.add(cap);
+    var body = new THREE.Mesh(K.lathe([[0.55, 0.9], [0.46, 1.4], [0.42, 1.9], [0.30, 2.3]], 24), coat);
+    K.outline(body, { thickness: 0.01 });
+    root.add(body);
+    [1, -1].forEach(function (s) {
+      var foot = new THREE.Mesh(K.capsule(0.13, 0.30, 8), K.cel({ color: 0x372b42 }));
+      foot.position.set(s * 0.22, 0.42, 0);
+      root.add(foot);
+      var arm = new THREE.Mesh(K.capsule(0.12, 0.5, 8), coat);
+      arm.position.set(s * 0.62, 1.75, 0);
+      arm.rotation.z = s * 0.25;
+      root.add(arm);
+    });
+    return {
+      root: root, height: 4.4, isFallback: true,
+      setState: function () {}, setLook: function () {}, pat: function () {},
+      update: function () {}, dispose: function () { K.dispose(root); },
+    };
+  }
+
+  /* ------------------- 池上限 / 泄漏压力测试（与画面无关） ------------------- */
+  function stressTest(FX, THREE) {
+    var out = { bursts: 0, maxActive: 0, capOk: true, clearOk: false, disposeOk: false, afterDisposeBurst: -1, groupChildren: -1, apiChecks: {}, cacheBeforeDispose: null, errors: [] };
+    try {
+      var mount = new THREE.Group();
+      var e = FX.createEmitter(mount);
+      var list = ["hearts", "sparkles", "notes", "zzz", "bubbles", "shock"];
+      for (var round = 0; round < 60; round++) {
+        for (var i = 0; i < list.length; i++) {
+          e.burst(list[i], { n: 12, x: 0, y: 2, z: 0 });
+          out.bursts++;
+          e.update(0.016);
+          var c = e.count();
+          if (c > out.maxActive) out.maxActive = c;
+          if (c > 72) out.capOk = false;
+        }
+      }
+      // 全部自然死亡
+      for (var f = 0; f < 400; f++) e.update(0.016);
+      out.endedAt = e.count();
+      // API 边界
+      out.apiChecks.badKind = e.burst("nope", {});
+      out.apiChecks.zeroN = e.burst("hearts", { n: 0 });
+      out.apiChecks.five = e.burst("hearts", { n: 5, x: 0, y: 2, z: 0 });
+      out.apiChecks.colorString = e.burst("sparkles", { n: 2, color: "#ff88cc", duration: 0.3 });
+      out.apiChecks.colorArray = e.burst("hearts", { n: 2, color: [0xff0000, "#00ffaa"] });
+      out.apiChecks.scaleSpread = e.burst("bubbles", { n: 2, scale: 1.7, spread: 1.4 });
+      // clear 只回收粒子，保留缓存
+      e.clear();
+      out.clearOk = e.count() === 0;
+      var mid = e.stats();
+      out.cacheBeforeDispose = { geometries: mid.geometries, textures: mid.textures, pooled: mid.pooledMesh + mid.pooledSprite };
+      // dispose 释放全部
+      e.dispose();
+      var st = e.stats();
+      out.disposeOk = !!(st.disposed && st.active === 0 && st.geometries === 0 && st.textures === 0 && st.pooledMesh === 0 && st.pooledSprite === 0);
+      out.afterDisposeStats = st;
+      out.afterDisposeBurst = e.burst("hearts", { n: 3 });
+      out.groupChildren = mount.children.length;
+    } catch (err) {
+      out.errors.push(String(err && (err.stack || err.message) || err));
+    }
+    return out;
+  }
+
+  /* ------------------- SFX 冒烟测试 ------------------- */
+  function renderSfxHud() {
+    try { hudEl.innerHTML = sfxHudText(); } catch (e) { hudEl.textContent = "sfx hud error: " + e; }
+  }
+
+  function runSfxTest(SFX) {
+    var out = { names: [], played: {}, secondRound: false, stats: null, statsAfterDispose: null, playAfterDispose: null, errors: [] };
+    try {
+      out.names = SFX.names ? SFX.names() : [];
+      SFX.setVolume(0.5);
+      out.volumeAfterSet = SFX.stats ? SFX.stats().volume : null;
+      var list = out.names.slice();
+      var i = 0, round = 0;
+      function next() {
+        try {
+          if (i >= list.length) {
+            round++;
+            if (round === 1) { i = 0; setTimeout(next, 260); return; }
+            SFX.setVolume(0.35);
+            out.stats = SFX.stats();
+            SFX.dispose();
+            out.statsAfterDispose = SFX.stats();
+            out.playAfterDispose = SFX.play("pat");
+            window.__SFX_TEST = out;
+            renderSfxHud();
+            window.__FX_READY = true;
+            return;
+          }
+          var name = list[i++];
+          out.played[name] = SFX.play(name);
+        } catch (e) {
+          out.errors.push(String(e && e.message || e));
+        }
+        setTimeout(next, 145);
+      }
+      setTimeout(next, 80);
+    } catch (e) {
+      out.errors.push(String(e && (e.stack || e.message) || e));
+      window.__SFX_TEST = out;
+      renderSfxHud();
+      window.__FX_READY = true;
+    }
+  }
+
+  function sfxHudText() {
+    var out = window.__SFX_TEST;
+    if (!out) return "sfx 测试运行中…";
+    var lines = [];
+    lines.push("<b>sfx 验收</b> · 真实源码 /src/3d/sfx.js（WebAudio 合成，无音频文件）");
+    lines.push("音色: " + out.names.join(", "));
+    var played = [];
+    for (var k in out.played) played.push(k + "=" + (out.played[k] ? "ok" : "no"));
+    lines.push("play 返回: " + played.join("  "));
+    if (out.stats) {
+      lines.push("AudioContext: hasContext=" + out.stats.hasContext + " state=" + out.stats.contextState + " failed=" + out.stats.failed + " started=" + out.stats.started);
+    }
+    if (out.statsAfterDispose) lines.push("dispose 后: state=" + out.statsAfterDispose.contextState + " hasContext=" + out.statsAfterDispose.hasContext + " playAfterDispose=" + out.playAfterDispose);
+    if (out.errors.length) lines.push('<span class="bad">errors: ' + out.errors.join(" | ") + "</span>");
+    else lines.push('<span class="ok">无异常：所有音效播放调用均未抛错</span>');
+    return lines.join("\n");
+  }
+
+  /* ------------------- 启动 ------------------- */
+  var boot = {
+    stage: null, char: null, emitter: null, FX: null, SFX: null,
+    stress: null, preset: null, loaded: {}, t: 0, errorCount: 0,
+  };
+
+  var loads = [
+    loadOne("kit", "kit.js"),
+    loadOne("fig", "fig.js"),
+    loadOne("fx", "fx.js"),
+    loadOne("sfx", "sfx.js"),
+    loadOne("stage", "stage.js"),
+    loadOne("chars.zerotwo", "chars/zerotwo.js"),
+  ];
+
+  Promise.all(loads).then(function (results) {
+    var loaded = {};
+    results.forEach(function (r) {
+      loaded[r.name] = r;
+      if (!r.ok) errors.push("加载 " + r.name + " 失败: " + r.err);
+      else notes.push("已加载 " + r.name + "（真实源码）");
+    });
+    boot.loaded = loaded;
+    try {
+      var K = req("kit").create(THREE);
+      var FIG = loaded.fig.ok ? req("fig").create(K, THREE) : null;
+      var stageMod = loaded.stage.ok ? req("stage") : null;
+      boot.FX = req("fx").create(K, THREE);
+      boot.SFX = req("sfx").create();
+
+      // 压力测试（不需要场景）
+      boot.stress = stressTest(boot.FX, THREE);
+      if (boot.stress.errors.length) errors.push("stress: " + boot.stress.errors.join(" | "));
+
+      if (mode === "sfx") {
+        hudEl.innerHTML = "";
+        runSfxTest(boot.SFX);
+        return;
+      }
+
+      // 舞台：优先真实 stage 模块
+      var stage = null;
+      if (stageMod) {
+        try { stage = stageMod.create({ THREE: THREE, K: K, host: stageHost, quality: "high" }); }
+        catch (e) { logErr("stage.create", e); }
+      }
+      if (!stage) { stage = fallbackStage(THREE, stageHost); notes.push("stage 兜底"); }
+      boot.stage = stage;
+
+      // 角色：优先真实 chibi
+      var char = null, preset = null;
+      if (loaded["chars.zerotwo"].ok && FIG) {
+        try {
+          var zero = req("chars.zerotwo").create(K, FIG, THREE);
+          preset = zero.variants.chibi || zero.variants[Object.keys(zero.variants)[0]];
+          char = preset.build({ THREE: THREE, K: K, FIG: FIG, stage: stage });
+        } catch (e) { logErr("chars.zerotwo.build", e); char = null; }
+      }
+      if (!char) { char = fallbackFigure(K, THREE); notes.push("角色兜底"); }
+      boot.char = char;
+      boot.preset = preset;
+      stage.root.add(char.root);
+
+      var cam = preset && preset.meta && preset.meta.camera ? preset.meta.camera : { height: char.height };
+      try {
+        if (stage.frame) stage.frame(cam);
+        stage.setSize(stageHost.clientWidth || window.innerWidth, stageHost.clientHeight || window.innerHeight);
+      } catch (e) { logErr("stage.frame", e); }
+
+      // 发射器：挂在角色根节点上 —— 正好验证"自动锚点"路径
+      boot.emitter = boot.FX.createEmitter(char.root);
+
+      // 角色状态：按特效选一个应景表情
+      var stateByKind = { hearts: "happy", sparkles: "happy", notes: "talk", zzz: "sleep", bubbles: "happy", shock: "shy" };
+      var wanted = wantState || (kinds.length === 1 ? stateByKind[kinds[0]] : "idle") || "idle";
+      try { if (char.setState) char.setState(wanted); } catch (e) { logErr("setState", e); }
+
+      window.addEventListener("resize", function () {
+        try { stage.setSize(stageHost.clientWidth || window.innerWidth, stageHost.clientHeight || window.innerHeight); } catch (e) {}
+      });
+
+      var last = performance.now();
+      var nextAt = 0.22;
+      var gap = kinds.length === 1 ? (kinds[0] === "shock" ? 0.5 : kinds[0] === "sparkles" ? 0.62 : 0.85) : 1.0;
+
+      function burstAll() {
+        for (var i = 0; i < kinds.length; i++) {
+          try { boot.emitter.burst(kinds[i], {}); } catch (e) { logErr("burst " + kinds[i], e); }
+        }
+      }
+
+      function hud() {
+        var st = boot.emitter.stats ? boot.emitter.stats() : {};
+        var s = boot.stress || {};
+        var lines = [];
+        lines.push("<b>fx 验收</b> · 真实源码 /src/3d/fx.js · three r" + (THREE.REVISION || "?"));
+        lines.push("kind: " + kinds.join(",") + (mode === "small" ? "  (small 220px)" : ""));
+        lines.push("粒子: active " + st.active + " / " + st.max + " · anchored=" + st.anchored + " · unit=" + (st.unit || 1).toFixed(2) + " · cache geo/tex=" + st.geometries + "/" + st.textures);
+        lines.push("压力: burst=" + s.bursts + " maxActive=" + s.maxActive + " capOk=" + s.capOk + " clearOk=" + s.clearOk + " disposeOk=" + s.disposeOk + " afterDisposeBurst=" + s.afterDisposeBurst);
+        lines.push("API: " + JSON.stringify(s.apiChecks));
+        if (boot.char && boot.char.isFallback) lines.push('<span id="fallbackNote">角色模块兜底（不影响 fx 验收）</span>');
+        if (errors.length) lines.push('<span class="bad">err: ' + errors.slice(-3).join(" | ") + "</span>");
+        else lines.push('<span class="ok">无报错</span>');
+        hudEl.innerHTML = lines.join("\n");
+      }
+
+      // 首帧前先来一发，截图时已经有粒子在飞
+      burstAll();
+      boot.t = 0;
+
+      function frame(now) {
+        var dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+        last = now;
+        boot.t += dt;
+        try {
+          if (boot.char.update) boot.char.update(dt, boot.t);
+          if (stage.tick) stage.tick(dt);
+          boot.emitter.update(dt);
+          stage.render();
+        } catch (e) { logErr("frame", e); }
+        if (boot.t >= nextAt) {
+          burstAll();
+          nextAt = boot.t + gap;
+        }
+        boot.hudT = (boot.hudT || 0) + dt;
+        if (boot.hudT > 0.2) { boot.hudT = 0; hud(); }
+        if (!window.__FX_READY) window.__FX_READY = true;
+        requestAnimationFrame(frame);
+      }
+      hud();
+      window.__FX_TEST = {
+        FX: boot.FX, SFX: boot.SFX, stage: stage, char: boot.char, emitter: boot.emitter,
+        kind: kinds, loaded: Object.keys(defs), notes: notes, errors: errors, stress: boot.stress,
+      };
+      requestAnimationFrame(frame);
+    } catch (e) {
+      logErr("boot", e);
+      hudEl.innerHTML = '<span class="bad">' + String(e && (e.stack || e.message) || e) + "</span>";
+      window.__FX_READY = true;
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MMD 预览</title>
+<style>html,body{margin:0;height:100%;background:radial-gradient(120% 90% at 50% 18%,#2b2140,#140f1f);overflow:hidden}#stage{position:absolute;inset:0}#err{position:fixed;inset:0;padding:20px;color:#f88;font:13px/1.5 monospace;white-space:pre-wrap;display:none;background:#140f1c}#hint{position:fixed;left:12px;bottom:10px;color:#9a8fb0;font:12px sans-serif}</style></head>
+<body><div id="stage"></div><div id="hint">loading…</div><pre id="err"></pre>
+<script src="/vendor/three-vrm.global.js"></script>
+<script>
+(function(){
+  var V = new URLSearchParams(location.search);
+  var base = V.get("base") || "/models/mmd/TDA-ZeroTwo/";
+  var file = V.get("file") || "ZeroTwo_TDA.pmx";
+  var yaw = parseFloat(V.get("yaw") || "0");
+  var zoom = parseFloat(V.get("zoom") || "1");
+  var ty = parseFloat(V.get("ty") || "0.5");
+  var THREE = window.THREE;
+  function fail(e){ var el=document.getElementById('err'); el.style.display='block'; el.textContent='MMD ERROR\n'+(e&&(e.stack||e.message)||e); window.__LAB_READY=true; }
+  window.addEventListener('error', function(ev){ fail(ev.error||ev.message); });
+  try {
+    var host = document.getElementById('stage');
+    var renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+    renderer.setPixelRatio(Math.min(2, devicePixelRatio||1));
+    renderer.setSize(host.clientWidth, host.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0,0);
+    host.appendChild(renderer.domElement);
+    var scene = new THREE.Scene();
+    var camera = new THREE.PerspectiveCamera(26, host.clientWidth/host.clientHeight, 0.01, 200);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+    var d1 = new THREE.DirectionalLight(0xffffff, 1.6); d1.position.set(1,4,3); scene.add(d1);
+    var d2 = new THREE.DirectionalLight(0xffc0d8, 0.6); d2.position.set(-2,2,-1); scene.add(d2);
+
+    function bakePose(mesh, opt) {
+      var geo = mesh.geometry;
+      var pos = geo.attributes.position, si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight;
+      if (!si || !sw || !mesh.skeleton) return;
+      var scene0 = mesh.parent;
+      while (scene0 && scene0.parent) scene0 = scene0.parent;
+      scene0.updateMatrixWorld(true);
+      var bones = mesh.skeleton.bones;
+      var boneMap = {};
+      bones.forEach(function (b) { boneMap[b.name] = b; });
+      var mw = mesh.matrixWorld.clone();
+      var mwInv = new THREE.Matrix4().copy(mw).invert();
+      function worldPivot(name) {
+        var b = boneMap[name];
+        if (!b) return null;
+        return new THREE.Vector3().setFromMatrixPosition(b.matrixWorld);
+      }
+      function rotAbout(pivot, ang) {
+        var t1 = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z);
+        var t2 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
+        return t1.multiply(new THREE.Matrix4().makeRotationZ(ang)).multiply(t2);
+      }
+      var pL = worldPivot("左肩"), pR = worldPivot("右肩"), pN = worldPivot("首") || worldPivot("頭");
+      if (!pL || !pR) return;
+      var armL = /^左(肩|腕|ひじ|手首|手先|親指|小指|薬指|中指|人指|人差指)/;
+      var armR = /^右(肩|腕|ひじ|手首|手先|親指|小指|薬指|中指|人指|人差指)/;
+      var headRe = /^(頭|首|髪|前髪|もみあげ|アホ毛|あほ毛|両目|左目|右目|舌|歯)/;
+      var L = rotAbout(pL, opt.angle * Math.PI / 180);
+      var R = rotAbout(pR, -opt.angle * Math.PI / 180);
+      var headS = opt.chibi ? (opt.head || 1.45) : 1;
+      var v = new THREE.Vector3(), wv = new THREE.Vector3(), acc = new THREE.Vector3(), tmp = new THREE.Vector3();
+      var moved = 0;
+      for (var vi = 0; vi < pos.count; vi++) {
+        v.fromBufferAttribute(pos, vi);
+        wv.copy(v).applyMatrix4(mw);
+        acc.set(0, 0, 0);
+        var total = 0;
+        for (var k = 0; k < 4; k++) {
+          var bi = si.getComponent(vi, k), w = sw.getComponent(vi, k);
+          if (!w) continue;
+          total += w;
+          var bn = bones[bi] ? bones[bi].name : "";
+          tmp.copy(wv);
+          if (armL.test(bn)) tmp.applyMatrix4(L);
+          else if (armR.test(bn)) tmp.applyMatrix4(R);
+          else if (headS !== 1 && headRe.test(bn) && pN) tmp.sub(pN).multiplyScalar(headS).add(pN);
+          acc.addScaledVector(tmp, w);
+        }
+        if (total > 0.0001) {
+          acc.divideScalar(total).applyMatrix4(mwInv);
+          if (acc.distanceTo(v) > 0.005) moved++;
+          pos.setXYZ(vi, acc.x, acc.y, acc.z);
+        }
+      }
+      pos.needsUpdate = true;
+      geo.computeVertexNormals(); geo.computeBoundingBox(); geo.computeBoundingSphere();
+      window.__BAKE = { moved: moved, total: pos.count, pL: pL.toArray(), pR: pR.toArray() };
+    }
+
+    var loader = new THREE_VRM.MMDLoader();
+    document.getElementById('hint').textContent = 'loading ' + base + file;
+    loader.load(base + file, function(mesh){
+      mesh.rotation.y = yaw;
+      scene.add(mesh);
+      var box = new THREE.Box3().setFromObject(mesh);
+      var size = new THREE.Vector3(); box.getSize(size);
+      var h = size.y;
+      var dist = (h/(2*Math.tan(26*Math.PI/360)))*1.12*zoom;
+      var centerY = box.min.y + h*ty;
+      camera.position.set(0, centerY + h*0.02, dist);
+      camera.lookAt(0, centerY, 0);
+      var boneMap = {};
+      if (mesh.skeleton) mesh.skeleton.bones.forEach(function (b) { boneMap[b.name] = b; });
+      // ?bone=左腕=0,0,-1.2;右腕=0,0,1.2
+      var bp = V.get("bone");
+      if (bp) bp.split(";").forEach(function (pair) {
+        var kv = pair.split("="); if (kv.length !== 2) return;
+        var b = boneMap[kv[0]]; if (!b) return;
+        var v = kv[1].split(",").map(Number);
+        b.rotation.set(v[0] || 0, v[1] || 0, v[2] || 0);
+      });
+      // ?morph=まばたき=1;笑い=0.8
+      var mp = V.get("morph");
+      if (mp && mesh.morphTargetDictionary) mp.split(";").forEach(function (pair) {
+        var kv = pair.split("="); if (kv.length !== 2) return;
+        var idx = mesh.morphTargetDictionary[kv[0]];
+        if (idx != null) mesh.morphTargetInfluences[idx] = Number(kv[1]);
+      });
+
+      // ===== 烘焙：手臂放下（可选 Q 版放大头）=====
+      var bakeParam = V.get("bake");
+      if (bakeParam === "1" || bakeParam === "chibi") {
+        try { bakePose(mesh, {
+          angle: parseFloat(V.get("angle") || "72"),
+          head: parseFloat(V.get("head") || "1"),
+          chibi: bakeParam === "chibi"
+        }); } catch (e) { console.warn("bake fail", e); }
+      }
+      window.__LAB = { mesh: mesh, scene: scene, camera: camera, renderer: renderer, boneMap: boneMap, bbox:{w:size.x,h:size.y,d:size.z,minY:box.min.y,maxY:box.max.y}, loader: loader };
+      document.getElementById('hint').textContent = file + ' h=' + h.toFixed(2) + ' morphs=' + (mesh.morphTargetInfluences ? mesh.morphTargetInfluences.length : 0);
+      window.__LAB_READY = true;
+    }, function(xhr){}, fail);
+    function loop(){ requestAnimationFrame(loop); renderer.render(scene, camera); }
+    loop();
+  } catch(e){ fail(e); }
+})();
+</script></body></html>

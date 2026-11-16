@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>three-vrm 管线验证 · VRM Lab</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: radial-gradient(120% 90% at 50% 18%, #2b2340 0%, #171222 55%, #0d0a14 100%); }
+  #stage { position: absolute; inset: 0; }
+  .hint { position: fixed; left: 12px; bottom: 10px; color: #6d6380; font: 12px/1.6 ui-sans-serif; z-index: 9; pointer-events: none; }
+  .badge { position: fixed; right: 12px; top: 10px; color: #cbb8e2; background: rgba(20,14,30,.55); border: 1px solid rgba(190,160,230,.18); border-radius: 8px; padding: 6px 10px; font: 11px/1.5 ui-monospace, monospace; z-index: 9; white-space: pre; pointer-events: none; }
+  #err { position: fixed; inset: 0; padding: 24px; color: #ff8fa3; font: 13px/1.6 ui-monospace, monospace; white-space: pre-wrap; display: none; background: #140f1c; z-index: 99; overflow: auto; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="hint">VRM Lab · ?model=&state=&view=&az=&el=&dist=&expr=happy=1&bg=transparent</div>
+<div class="badge" id="badge">loading…</div>
+<pre id="err"></pre>
+
+<!-- 运行时包：three r166 + @pixiv/three-vrm 3 + GLTFLoader（经典脚本，挂 window.THREE / window.THREE_VRM） -->
+<script src="/vendor/three-vrm.global.js"></script>
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search);
+  var errEl = document.getElementById("err");
+  var badge = document.getElementById("badge");
+
+  function fail(e) {
+    errEl.style.display = "block";
+    errEl.textContent = "VRM LAB ERROR\n" + (e && (e.stack || e.message) || e);
+    window.__LAB_READY = true;
+    window.__LAB_ERROR = String(e && (e.stack || e.message) || e);
+  }
+  window.addEventListener("error", function (ev) { fail(ev.error || ev.message); });
+  window.addEventListener("unhandledrejection", function (ev) { fail(ev.reason); });
+
+  /* ---------------------------------------------------------------------------
+   * 极简 __def/__req：和 build.py 给插件用的模块包装完全一致，
+   * 只不过这里改成运行时从 /src 拉源码（lab 不依赖 lab/bundle.js 是否最新）。
+   * 这样验证的就是 build.py 内联的同一份 src/3d/vrmchar.js。
+   * ------------------------------------------------------------------------- */
+  var __REG = Object.create(null), __CACHE = Object.create(null);
+  function __def(name, fn) { __REG[name] = fn; }
+  function __req(name) {
+    if (__CACHE[name]) return __CACHE[name].exports;
+    var fn = __REG[name];
+    if (!fn) throw new Error("模块未定义: " + name + "（可用: " + Object.keys(__REG).join(",") + "）");
+    var mod = { exports: {} };
+    __CACHE[name] = mod;
+    fn(mod, mod.exports, __req);
+    return mod.exports;
+  }
+  window.__REQ = __req;
+
+  var MODULES = [
+    ["kit", "/src/3d/kit.js"],
+    ["stage", "/src/3d/stage.js"],
+    ["vrmchar", "/src/3d/vrmchar.js"]
+  ];
+  // 可选模块：存在就加载（vrm-style 由另一个 agent 维护，没写好也不影响本页）
+  var OPTIONAL_MODULES = [["vrm-style", "/src/3d/vrm-style.js"]];
+
+  function registerModule(name, url, src) {
+    __def(name, new Function("module", "exports", "require",
+      '"use strict";\n' + src + "\n//# sourceURL=" + (url || name)));
+  }
+
+  function loadModules() {
+    return MODULES.reduce(function (p, item) {
+      return p.then(function () {
+        return fetch(item[1]).then(function (res) {
+          if (!res.ok) throw new Error("模块加载失败 " + item[1] + " HTTP " + res.status);
+          return res.text();
+        }).then(function (src) { registerModule(item[0], item[1], src); });
+      });
+    }, Promise.resolve()).then(function () {
+      // 可选模块：默认不加载（避免 404 噪音），?stylemod=1 时才尝试
+      if (params.get("stylemod") !== "1") return Promise.resolve();
+      return OPTIONAL_MODULES.reduce(function (p, item) {
+        return p.then(function () {
+          return fetch(item[1]).then(function (res) {
+            if (!res.ok) return null;
+            return res.text();
+          }).then(function (src) {
+            if (src) registerModule(item[0], item[1], src);
+          }).catch(function () {});
+        });
+      }, Promise.resolve());
+    });
+  }
+
+  function start() {
+    var THREE = window.THREE;
+    var THREE_VRM = window.THREE_VRM;
+    if (!THREE) throw new Error("window.THREE 未加载：/vendor/three-vrm.global.js 失败？");
+    if (!THREE_VRM) throw new Error("window.THREE_VRM 未加载：/vendor/three-vrm.global.js 失败？");
+
+    // 背景
+    var bg = params.get("bg") || "dark";
+    var hideUi = params.get("ui") === "0" || bg === "transparent";
+    if (bg === "transparent") {
+      document.documentElement.style.background = "transparent";
+      document.body.style.background = "transparent";
+      document.getElementById("stage").style.background = "transparent";
+    }
+    if (hideUi) {
+      var hintEl = document.querySelector(".hint");
+      if (hintEl) hintEl.style.display = "none";
+      badge.style.display = "none";
+    }
+    if (bg === "light") {
+      document.body.style.background = "radial-gradient(120% 90% at 50% 18%, #ffffff 0%, #eceaf2 60%, #dcd8e6 100%)";
+    } else if (bg === "mid") {
+      document.body.style.background = "radial-gradient(120% 90% at 50% 18%, #6f6a80 0%, #4a4558 60%, #2f2b3a 100%)";
+    }
+
+    var K = __req("kit").create(THREE);
+    var stage = __req("stage").create({ THREE: THREE, K: K, host: document.getElementById("stage"), quality: "high" });
+    stage.setSize(window.innerWidth, window.innerHeight);
+
+    var VRMCHAR = __req("vrmchar").create({ THREE: THREE, K: K, stage: stage, THREE_VRM: THREE_VRM });
+
+    // 本页在 /lab/ 下，把 "models/x.vrm" 这类相对于站点根的路径补成绝对路径
+    var modelUrl = params.get("model") || "models/twist.vrm";
+    if (!/^(https?:)?\//.test(modelUrl)) modelUrl = "/" + modelUrl;
+    var state = params.get("state") || "idle";
+    var targetHeight = Number(params.get("height")) || 4.4;
+    var margin = params.get("margin") ? Number(params.get("margin")) : 1.06;
+    VRMCHAR.addModel("lab", {
+      url: modelUrl,
+      label: "lab model",
+      height: targetHeight,
+      glowColor: params.get("glow") ? Number(params.get("glow")) : 0xff8fb0,
+      camera: { margin: margin, elevation: 0.06 }
+    });
+
+    var char = null;
+    var t = 0, last = performance.now();
+
+    function infoText() {
+      var inf = char && char.info ? char.info() : {};
+      var mi = VRMCHAR.modelInfo("lab") || {};
+      badge.textContent = [
+        "model  " + modelUrl.split("/").pop(),
+        "load   " + (mi.loadMs || 0) + " ms / " + ((mi.bytes || 0) / 1024 / 1024).toFixed(1) + " MB",
+        "size   " + (inf.height || "?") + " u · " + (inf.meshes || 0) + " mesh · " + (inf.materials || 0) + " mat",
+        "mtoon  " + (inf.mtoon || 0) + " · outline " + (inf.outlines || 0) + " · bones " + (inf.bones || 0),
+        "spring " + (inf.springBones || 0) + " · expr " + ((inf.expressions || []).length),
+        "state  " + state
+      ].join("\n");
+    }
+
+    var VIEWS = {
+      front: { az: 0, el: 0.055 },
+      three: { az: 0.62, el: 0.06 },
+      quarter: { az: 0.62, el: 0.06 },
+      side: { az: 1.5, el: 0.06 },
+      back: { az: Math.PI, el: 0.06 },
+      closeup: { az: 0.3, el: 0.14, distK: 0.62, targetY: targetHeight * 0.7 },
+      face: { az: 0.22, el: 0.16, distK: 0.36, targetY: targetHeight * 0.82 }
+    };
+
+    function applyView() {
+      var viewName = params.get("view") || "";
+      var v = VIEWS[viewName] || {};
+      var az = params.get("az") != null ? Number(params.get("az")) : (v.az == null ? 0 : v.az);
+      var el = params.get("el") != null ? Number(params.get("el")) : (v.el == null ? 0.06 : v.el);
+      var baseDist = stage.state.dist || targetHeight * 2.4;
+      var distK = params.get("distK") != null ? Number(params.get("distK")) : (v.distK == null ? 1 : v.distK);
+      var zoom = params.get("zoom") != null ? Number(params.get("zoom")) : 1;
+      var dist = params.get("dist") != null ? Number(params.get("dist")) : baseDist * distK * zoom;
+      var charH = char ? char.height : targetHeight;
+      var tyParam = params.get("ty") != null ? Number(params.get("ty")) : null;
+      var targetY = params.get("targetY") != null
+        ? Number(params.get("targetY"))
+        : tyParam != null ? charH * tyParam
+          : (v.targetY == null ? (stage.state.targetY || targetHeight * 0.5) : v.targetY);
+      stage.hard(az, el, dist, targetY);
+    }
+
+    function applyState() {
+      if (!char) return;
+      char.setState(state);
+      var look = params.get("look");
+      if (look) {
+        var lv = look.split(",").map(Number);
+        char.setLook(lv[0] || 0, lv[1] || 0);
+      }
+      if (params.get("pat")) char.pat();
+      // ?expr=happy=0.8,blink=1 -> 直接设置表情权重（调试）
+      var exprParam = params.get("expr");
+      if (exprParam && char.debugExpression) {
+        exprParam.split(",").forEach(function (pair) {
+          var kv = pair.split("=");
+          if (kv[0]) char.debugExpression(kv[0], kv.length > 1 ? Number(kv[1]) : 1);
+        });
+      }
+      // ?bone=leftUpperArm=0,-0.4,1.2;head=0.2,0,0 -> 直接摆骨骼（调试）
+      var boneParam = params.get("bone");
+      if (boneParam && char.debugBone) {
+        boneParam.split(";").forEach(function (pair) {
+          var kv = pair.split("=");
+          var v = (kv[1] || "").split(",").map(Number);
+          if (kv[0]) char.debugBone(kv[0], v[0], v[1], v[2]);
+        });
+      }
+    }
+
+    function loop(now) {
+      var dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      t += dt;
+      if (char) char.update(dt, t);
+      stage.tick(dt);
+      stage.render();
+      requestAnimationFrame(loop);
+    }
+
+    window.__LAB = {
+      THREE: THREE,
+      THREE_VRM: THREE_VRM,
+      stage: stage,
+      vrm: VRMCHAR,
+      char: null,
+      get ready() { return !!(char && char.isMounted && char.isMounted()); },
+      setState: function (s) { state = s; applyState(); infoText(); },
+      setLook: function (x, y) { if (char) char.setLook(x, y); },
+      expr: function (name, value) { if (char && char.debugExpression) char.debugExpression(name, value); },
+      bone: function (name, x, y, z) { if (char && char.debugBone) char.debugBone(name, x, y, z); },
+      resetDebug: function () { if (char && char.debugReset) char.debugReset(); },
+      pat: function () { if (char) char.pat(); },
+      orbit: function (az, el, dist, targetY) { stage.hard(az, el, dist, targetY); },
+      bbox: function () {
+        if (!char) return null;
+        var b = new THREE.Box3().setFromObject(char.root);
+        var s = new THREE.Vector3(); b.getSize(s);
+        return { w: +s.x.toFixed(2), h: +s.y.toFixed(2), d: +s.z.toFixed(2), minY: +b.min.y.toFixed(2), maxY: +b.max.y.toFixed(2) };
+      },
+      info: function () { return char ? char.info() : null; },
+      models: function () { return VRMCHAR.info(); },
+      three: function () { return THREE.REVISION; }
+    };
+
+    function onReady() {
+      stage.setSize(window.innerWidth, window.innerHeight);
+      applyState();
+      applyView();
+      infoText();
+      // 再跑几帧让表情 / lookAt 到位，然后对外宣布就绪
+      var frames = 0;
+      (function settle() {
+        frames++;
+        if (frames < 10) return requestAnimationFrame(settle);
+        window.__LAB_READY = true;
+        infoText();
+      })();
+    }
+
+    function startChar() {
+      var buildCfg = { model: { turnY: Number(params.get("turnY")) || 0 } };
+      char = VRMCHAR.build("lab", buildCfg);
+      window.__LAB.char = char;
+      stage.root.add(char.root);
+      // 页面里的 __LAB.info()/bbox() 在 char 就绪前后都能用
+      char.mountPromise.then(onReady).catch(fail);
+    }
+
+    // 默认走"先 preload 再 build"（插件里的真实路径：sync 接管已解析实例，无占位闪烁）
+    // ?async=1 走"没预热直接 build"（占位 + 异步挂载）
+    var preloadPromise = VRMCHAR.preload("lab", {
+      onProgress: function (loaded, total) {
+        badge.textContent = "下载中 " + (total ? Math.round(loaded / total * 100) + "%" : (loaded / 1024 / 1024).toFixed(1) + " MB");
+      }
+    });
+    preloadPromise.catch(function () { /* mountPromise 会带错误 */ });
+    if (params.get("async") === "1") startChar();
+    else preloadPromise.then(startChar).catch(fail);
+
+    window.addEventListener("resize", function () {
+      stage.setSize(window.innerWidth, window.innerHeight);
+      applyView();
+    });
+
+    requestAnimationFrame(loop);
+  }
+
+  loadModules().then(start).catch(fail);
+})();
+</script>
+</body>
+</html>

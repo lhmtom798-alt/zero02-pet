@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>02 发束叠加实验 · mmd-hair</title>
+<style>
+  html, body { margin: 0; height: 100%; background: radial-gradient(120% 90% at 50% 12%, #2b2140, #140f1f); overflow: hidden; }
+  #stage { position: absolute; inset: 0; }
+  #hud {
+    position: fixed; left: 12px; top: 10px; z-index: 2;
+    color: #ecd8e6; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: rgba(20, 15, 28, .5); border: 1px solid rgba(255, 180, 210, .16);
+    border-radius: 8px; padding: 7px 10px; white-space: pre; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+  #hint { position: fixed; left: 12px; bottom: 10px; color: #9a8fb0; font: 12px sans-serif; z-index: 2; }
+  #err { position: fixed; inset: 0; padding: 20px; color: #f88; font: 13px/1.5 monospace; white-space: pre-wrap; display: none; background: #140f1c; z-index: 5; }
+  #badge { position: fixed; right: 12px; top: 10px; z-index: 2; color: #ffc6dd; font: 11px/1.5 ui-monospace, Menlo, monospace;
+    background: rgba(20,15,28,.5); border: 1px solid rgba(255,180,210,.16); border-radius: 8px; padding: 6px 9px; white-space: pre; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="badge"></div>
+<div id="hud"></div>
+<div id="hint">loading…</div>
+<pre id="err"></pre>
+
+<script src="/vendor/three-vrm.global.js"></script>
+<!-- 发束模块本体：CommonJS 模块也能当普通 script 用，会挂到 window.MMDHAIR -->
+<script src="/src/3d/mmd-hair.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var THREE = window.THREE;
+  var V = new URLSearchParams(location.search);
+  function num(k, d) { var v = V.get(k); return v == null || v === "" ? d : parseFloat(v); }
+  function str(k, d) { var v = V.get(k); return v == null || v === "" ? d : v; }
+
+  function fail(e) {
+    var el = document.getElementById("err");
+    el.style.display = "block";
+    el.textContent = "MMD-HAIR ERROR\n" + (e && (e.stack || e.message) || e);
+    window.__HAIR_READY = true;
+    window.__HAIR_ERROR = String(e && (e.stack || e.message) || e);
+  }
+  window.addEventListener("error", function (ev) { fail(ev.error || ev.message); });
+
+  try {
+    var P = {
+      pmx: str("pmx", "/models/mmd/TDA-ZeroTwo/test-fixed2.pmx"),
+      hair: str("hair", "1") !== "0",
+      // 发束参数
+      density: num("density", 2),
+      radius: num("radius", 0.08),
+      len: num("len", 1.25),
+      shine: num("shine", 1),
+      color: str("color", "ff9fc4"),
+      shell: num("shell", 1.0),
+      lift: num("lift", 0.032),
+      thickness: num("thickness", 0.65),
+      width: num("width", 5),
+      segments: num("segments", 18),
+      groups: str("groups", ""),
+      mat: str("mat", "basic"),
+      // 镜头/演示
+      yaw: num("yaw", 0),
+      pitch: num("pitch", 0),
+      ty: num("ty", 0.62),
+      zoom: num("zoom", 1),
+      wave: num("wave", 1),
+      twist: num("twist", 1),
+      variation: num("variation", 1),
+      rayScale: num("rayScale", 1),
+      softEdge: num("softEdge", 0.9),
+      merge: num("merge", 1),
+      ring: num("ring", 0),
+      ringY: num("ringY", 0),
+      ringH: num("ringH", 0.52),
+      ringIntensity: num("ringIntensity", 1),
+      pose: num("pose", 0),
+      hud: str("hud", "1") !== "0",
+    };
+
+    var host = document.getElementById("stage");
+    var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(host.clientWidth, host.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0, 0);
+    host.appendChild(renderer.domElement);
+
+    var scene = new THREE.Scene();
+    var camera = new THREE.PerspectiveCamera(26, host.clientWidth / host.clientHeight, 0.01, 400);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+    var d1 = new THREE.DirectionalLight(0xffffff, 1.6); d1.position.set(1, 4, 3); scene.add(d1);
+    var d2 = new THREE.DirectionalLight(0xffc0d8, 0.6); d2.position.set(-2, 2, -1); scene.add(d2);
+    var d3 = new THREE.DirectionalLight(0xbcd0ff, 0.35); d3.position.set(-1.2, 2.4, -3.2); scene.add(d3);
+
+    window.addEventListener("resize", function () {
+      renderer.setSize(host.clientWidth, host.clientHeight);
+      camera.aspect = host.clientWidth / host.clientHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    var model = null;
+    var hair = null;
+    var restQuat = [];
+
+    function frameCamera() {
+      var box = new THREE.Box3().setFromObject(model);
+      var size = new THREE.Vector3(); box.getSize(size);
+      var h = size.y || 19.7;
+      var dist = (h / (2 * Math.tan(26 * Math.PI / 360))) * 1.12 * P.zoom;
+      var centerY = box.min.y + h * P.ty;
+      camera.position.set(0, centerY + h * 0.02, dist);
+      camera.lookAt(0, centerY, 0);
+      if (P.pitch) {
+        camera.position.y = centerY + h * 0.02 - dist * Math.sin(P.pitch);
+        camera.position.z = dist * Math.cos(P.pitch);
+        camera.lookAt(0, centerY, 0);
+      }
+      return { h: h, minY: box.min.y, maxY: box.max.y, w: size.x, d: size.z };
+    }
+
+    // 固定强度的「风」：把每根头发骨骼按深度做一个确定性的旋转，用来演示
+    // 「发片蒙皮在原骨骼上，头发物理一动发片就跟着动」。
+    function applyPose(amount) {
+      if (!amount || !model || !model.skeleton) return;
+      var bones = model.skeleton.bones;
+      var n = 0;
+      for (var i = 0; i < bones.length && n < restQuat.length; i++) {
+        var b = bones[i];
+        if (!/^cf_J_hair/.test(b.name) || /_top$/.test(b.name)) continue;
+        var rest = restQuat[n++];
+        if (!rest) continue;
+        var m = /_(\d+)$/.exec(b.name);
+        var d = m ? parseInt(m[1], 10) : 1;
+        var side = /BL|FL/.test(b.name) ? 1 : (/BR|FR/.test(b.name) ? -1 : 0);
+        var ax = 0.016 * amount * d + (side === 0 ? 0.010 * amount * d : 0);
+        var az = 0.030 * amount * d * (side || 0.35);
+        var e = new THREE.Euler(ax, 0, az);
+        var q = new THREE.Quaternion().setFromEuler(e);
+        b.quaternion.copy(rest).multiply(q);
+      }
+      model.updateMatrixWorld(true);
+    }
+
+    var loader = new THREE_VRM.MMDLoader();
+    document.getElementById("hint").textContent = "loading " + P.pmx;
+    loader.load(P.pmx, function (mesh) {
+      try {
+        model = mesh;
+        mesh.rotation.y = P.yaw;
+        scene.add(mesh);
+        mesh.updateMatrixWorld(true);
+
+        var bbox = frameCamera();
+
+        // 缓存骨骼初始姿态（演示 pose 时用）
+        if (mesh.skeleton && mesh.skeleton.bones) {
+          for (var bi = 0; bi < mesh.skeleton.bones.length; bi++) {
+            var bb = mesh.skeleton.bones[bi];
+            if (/^cf_J_hair/.test(bb.name) && !/_top$/.test(bb.name)) {
+              restQuat.push(bb.quaternion.clone());
+            }
+          }
+        }
+
+        if (P.hair) {
+          if (!window.MMDHAIR) throw new Error("window.MMDHAIR 未加载（/src/3d/mmd-hair.js）");
+          hair = window.MMDHAIR.attach(mesh, {
+            density: P.density, radius: P.radius, len: P.len, shine: P.shine,
+            color: P.color, shell: P.shell, lift: P.lift, thickness: P.thickness,
+            width: P.width, segments: P.segments, groups: P.groups, mat: P.mat,
+            wave: P.wave, twist: P.twist, variation: P.variation, rayScale: P.rayScale,
+            ring: P.ring, ringY: P.ringY, ringH: P.ringH, ringIntensity: P.ringIntensity,
+            softEdge: P.softEdge, merge: P.merge,
+          });
+        }
+        if (P.pose) applyPose(P.pose);
+
+        window.__HAIR = hair;
+        window.__HAIR_INFO = {
+          params: P,
+          stats: hair ? hair.stats : null,
+          hairReady: !!hair,
+        };
+
+        // HUD
+        var stats = hair ? hair.stats : null;
+        var hudEl = document.getElementById("hud");
+        if (P.hud) {
+          var lines = [
+            "mmd-hair lab  v" + (window.MMDHAIR ? window.MMDHAIR.version : "?") +
+              "   " + P.pmx.split("/").pop(),
+            "hair=" + (P.hair ? "1" : "0") + "  density=" + P.density + "  radius=" + P.radius +
+              "  len=" + P.len + "  shine=" + P.shine + "  shell=" + P.shell,
+            "color=#" + P.color + "  mat=" + P.mat + "  width=" + P.width + "  seg=" + P.segments +
+              "  pose=" + P.pose + "  ring=" + P.ring,
+            "strands=" + (stats ? stats.strands : 0) + "  chains=" + (stats ? stats.chains : 0) +
+              "  hullPts=" + (stats ? stats.hullPoints : 0) +
+              "  ring=" + (stats && stats.ring ? ("y" + stats.ring.y) : "off") +
+              "  draws=" + (stats ? stats.drawCalls : 0),
+          ];
+          hudEl.textContent = lines.join("\n");
+        } else {
+          hudEl.style.display = "none";
+        }
+        document.getElementById("badge").textContent =
+          P.hair ? ("发束 " + (stats ? stats.strands : 0) + " 条") : "对照组：无发束";
+        document.getElementById("hint").textContent =
+          "h=" + bbox.h.toFixed(2) + "  bones=" + mesh.skeleton.bones.length +
+          "  morphs=" + (mesh.morphTargetInfluences ? mesh.morphTargetInfluences.length : 0);
+        window.__LAB = {
+          mesh: mesh, scene: scene, camera: camera, renderer: renderer,
+          bbox: { w: bbox.w, h: bbox.h, d: bbox.d, minY: bbox.minY, maxY: bbox.maxY },
+        };
+        window.__HAIR_READY = true;
+      } catch (e) {
+        fail(e);
+      }
+    }, function (xhr) {}, fail);
+
+    (function loop() {
+      requestAnimationFrame(loop);
+      renderer.render(scene, camera);
+    })();
+  } catch (e) {
+    fail(e);
+  }
+})();
+</script>
+</body>
+</html>

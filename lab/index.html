@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>02 桌宠 · 3D 角色实验室</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14101d; }
+  #stage { position: absolute; inset: 0; }
+  .hint { position: fixed; left: 12px; bottom: 10px; color: #6d6380; font: 12px/1.5 ui-sans-serif; z-index: 9; }
+  #err { position: fixed; inset: 0; padding: 20px; color: #ff8fa3; font: 13px/1.5 ui-monospace; white-space: pre-wrap; display: none; background: #140f1c; z-index: 99; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="hint">lab · q=state/mode/char · 截图工具 tools/shot.mjs</div>
+<pre id="err"></pre>
+<script src="/vendor/three.global.js"></script>
+<script src="/lab/bundle.js"></script>
+<script>
+  (function () {
+    function fail(e) {
+      var el = document.getElementById('err');
+      el.style.display = 'block';
+      el.textContent = 'LAB ERROR\n' + (e && (e.stack || e.message) || e);
+      window.__LAB_READY = true;
+    }
+    window.addEventListener('error', function (ev) { fail(ev.error || ev.message); });
+    window.addEventListener('unhandledrejection', function (ev) { fail(ev.reason); });
+    try {
+      var params = new URLSearchParams(location.search);
+      if (params.get("bg") === "transparent") {
+        document.documentElement.style.background = "transparent";
+        document.body.style.background = "transparent";
+        document.getElementById("stage").style.background = "transparent";
+        var hint = document.querySelector(".hint");
+        if (hint) hint.style.display = "none";
+      }
+      window.__LAB_START(document.getElementById('stage'), params);
+    } catch (e) { fail(e); }
+  })();
+</script>
+</body>
+</html>

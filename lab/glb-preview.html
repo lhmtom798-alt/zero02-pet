@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>GLB 预览</title>
+<style>html,body{margin:0;height:100%;background:radial-gradient(120% 90% at 50% 18%,#2b2140,#140f1f);overflow:hidden}#stage{position:absolute;inset:0}#err{position:fixed;inset:0;padding:20px;color:#f88;font:13px/1.5 monospace;white-space:pre-wrap;display:none;background:#140f1c}#hint{position:fixed;left:12px;bottom:10px;color:#9a8fb0;font:12px sans-serif}</style></head>
+<body><div id="stage"></div><div id="hint">loading…</div><pre id="err"></pre>
+<script src="/vendor/three-vrm.global.js"></script>
+<script>
+(function(){
+  var V = new URLSearchParams(location.search);
+  var url = V.get("model") || "/models/mmd/TDA-ZeroTwo/TDA-ZeroTwo.glb";
+  var yaw = parseFloat(V.get("yaw") || "0");
+  var zoom = parseFloat(V.get("zoom") || "1");
+  var ty = parseFloat(V.get("ty") || "0.5");
+  var THREE = window.THREE;
+  function fail(e){ var el=document.getElementById('err'); el.style.display='block'; el.textContent='GLB ERROR\n'+(e&&(e.stack||e.message)||e); window.__LAB_READY=true; }
+  window.addEventListener('error', function(ev){ fail(ev.error||ev.message); });
+  try {
+    var host = document.getElementById('stage');
+    var renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+    renderer.setPixelRatio(Math.min(2, devicePixelRatio||1));
+    renderer.setSize(host.clientWidth, host.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0,0);
+    host.appendChild(renderer.domElement);
+    var scene = new THREE.Scene();
+    var camera = new THREE.PerspectiveCamera(26, host.clientWidth/host.clientHeight, 0.01, 500);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+    var d1 = new THREE.DirectionalLight(0xffffff, 1.8); d1.position.set(1,4,3); scene.add(d1);
+    var d2 = new THREE.DirectionalLight(0xffc0d8, 0.7); d2.position.set(-2,2,-1); scene.add(d2);
+    var gltfLoader = new THREE_VRM.GLTFLoader();
+    gltfLoader.load(url, function(gltf){
+      var root = gltf.scene;
+      root.rotation.y = yaw;
+      scene.add(root);
+      var box = new THREE.Box3().setFromObject(root);
+      var size = new THREE.Vector3(); box.getSize(size);
+      var h = size.y;
+      var dist = (h/(2*Math.tan(26*Math.PI/360)))*1.12*zoom;
+      var centerY = box.min.y + h*ty;
+      camera.position.set(0, centerY + h*0.02, dist);
+      camera.lookAt(0, centerY, 0);
+      var boneMap = {};
+      root.traverse(function(o){ if(o.isBone) boneMap[o.name]=o; });
+      var morphs = {};
+      root.traverse(function(o){ if(o.isMesh && o.morphTargetDictionary) Object.assign(morphs, o.morphTargetDictionary); });
+      // ?bone=左腕=0,0,-1.2;右腕=0,0,1.2
+      var bp = V.get("bone");
+      if (bp) bp.split(";").forEach(function (pair) {
+        var kv = pair.split("="); if (kv.length !== 2) return;
+        var b = boneMap[kv[0]]; if (!b) return;
+        var v = kv[1].split(",").map(Number);
+        b.rotation.set(v[0] || 0, v[1] || 0, v[2] || 0);
+      });
+      window.__LAB = { scene: scene, camera: camera, renderer: renderer, root: root, boneMap: boneMap, morphs: morphs, bbox:{w:size.x,h:size.y,d:size.z,minY:box.min.y,maxY:box.max.y} };
+      document.getElementById('hint').textContent = url + ' h=' + h.toFixed(2) + ' bones=' + Object.keys(boneMap).length + ' morphs=' + Object.keys(morphs).length;
+      window.__LAB_READY = true;
+    }, function(xhr){}, fail);
+    function loop(){ requestAnimationFrame(loop); renderer.render(scene, camera); }
+    loop();
+  } catch(e){ fail(e); }
+})();
+</script></body></html>
