@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd9e6"/>
+      <stop offset="1" stop-color="#ffb3cc"/>
+    </linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8a3c8"/>
+      <stop offset="1" stop-color="#e07aa6"/>
+    </linearGradient>
+    <radialGradient id="iris" cx="0.5" cy="0.35" r="0.75">
+      <stop offset="0" stop-color="#8ff0cf"/>
+      <stop offset="0.55" stop-color="#3fb894"/>
+      <stop offset="1" stop-color="#1f6b5c"/>
+    </radialGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- 头发 -->
+  <path d="M18 78 C14 38 40 14 64 14 C88 14 114 38 110 78 C110 92 104 104 96 112 L32 112 C24 104 18 92 18 78 Z" fill="url(#hair)"/>
+  <!-- 脸 -->
+  <path d="M28 66 C28 46 44 34 64 34 C84 34 100 46 100 66 C100 88 84 102 64 102 C44 102 28 88 28 66 Z" fill="#ffe6d6"/>
+  <!-- 刘海 -->
+  <path d="M25 60 C30 32 46 20 64 20 C82 20 98 32 103 60 C92 52 86 56 80 62 C76 50 72 46 64 46 C56 46 52 50 48 62 C42 56 36 52 25 60 Z" fill="#f39cc2"/>
+  <!-- 角 -->
+  <path d="M38 26 C34 16 34 8 38 4 C42 10 44 18 44 26 Z" fill="#f2485a"/>
+  <path d="M90 26 C94 16 94 8 90 4 C86 10 84 18 84 26 Z" fill="#f2485a"/>
+  <!-- 发带 -->
+  <path d="M34 30 C48 22 80 22 94 30 L92 36 C78 29 50 29 36 36 Z" fill="#fff6f2"/>
+  <!-- 眼睛 -->
+  <ellipse cx="46" cy="72" rx="13" ry="15" fill="#fffafc"/>
+  <ellipse cx="82" cy="72" rx="13" ry="15" fill="#fffafc"/>
+  <ellipse cx="46" cy="73" rx="10" ry="13" fill="url(#iris)"/>
+  <ellipse cx="82" cy="73" rx="10" ry="13" fill="url(#iris)"/>
+  <ellipse cx="46" cy="73" rx="4" ry="6" fill="#123a33"/>
+  <ellipse cx="82" cy="73" rx="4" ry="6" fill="#123a33"/>
+  <circle cx="42" cy="67" r="4" fill="#ffffff"/>
+  <circle cx="78" cy="67" r="4" fill="#ffffff"/>
+  <circle cx="49" cy="79" r="1.8" fill="#ffffff" opacity="0.9"/>
+  <circle cx="85" cy="79" r="1.8" fill="#ffffff" opacity="0.9"/>
+  <!-- 睫毛 -->
+  <path d="M32 63 C38 54 52 54 58 60" stroke="#3d2130" stroke-width="3.4" fill="none" stroke-linecap="round"/>
+  <path d="M70 60 C77 54 90 54 96 63" stroke="#3d2130" stroke-width="3.4" fill="none" stroke-linecap="round"/>
+  <!-- 腮红 + 嘴 -->
+  <ellipse cx="36" cy="86" rx="6" ry="3.6" fill="#ff9db8" opacity="0.7"/>
+  <ellipse cx="92" cy="86" rx="6" ry="3.6" fill="#ff9db8" opacity="0.7"/>
+  <path d="M59 88 C62 91 66 91 69 88" stroke="#b4566e" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+</svg>
