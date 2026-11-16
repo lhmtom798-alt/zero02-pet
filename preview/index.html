@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>02 桌宠 · 本地预览</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background:
+      radial-gradient(900px 600px at 78% 18%, rgba(232,56,90,.16), transparent 62%),
+      radial-gradient(700px 520px at 12% 88%, rgba(120,90,255,.14), transparent 60%),
+      linear-gradient(160deg, #141021 0%, #1b1226 42%, #0e0b16 100%);
+    font-family: ui-rounded, -apple-system, "PingFang SC", system-ui, sans-serif;
+    color: #e9e4f2; overflow: hidden;
+  }
+  .shell { display: flex; height: 100%; }
+  .side {
+    width: 232px; flex: none; padding: 18px 14px;
+    background: rgba(255,255,255,.035); border-right: 1px solid rgba(255,255,255,.07);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .logo { font-weight: 800; font-size: 15px; letter-spacing: .4px; margin-bottom: 10px; }
+  .logo b { color: #ff5f7e; }
+  .item { padding: 9px 11px; border-radius: 10px; font-size: 13px; color: #b9b0c9; }
+  .item.on { background: rgba(232,56,90,.16); color: #fff; }
+  .main { flex: 1; padding: 34px 40px; overflow: hidden; }
+  .h1 { font-size: 22px; font-weight: 800; margin: 0 0 6px; }
+  .sub { color: #9d93b0; font-size: 13px; margin-bottom: 26px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; max-width: 760px; }
+  .card {
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 16px; padding: 16px 15px; font-size: 13px; color: #c8c0d8;
+  }
+  .card h4 { margin: 0 0 8px; font-size: 13px; color: #fff; }
+  .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: 10px; }
+  .bar i { display: block; height: 100%; background: linear-gradient(90deg, #ff5f7e, #ff9a5c); }
+  .note {
+    position: fixed; left: 20px; bottom: 18px; font-size: 12px; color: #8d84a0; max-width: 420px; line-height: 1.6;
+  }
+  .note code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="logo">DARLING <b>in the DSH</b></div>
+    <div class="item on">💬 会话</div>
+    <div class="item">🗂 项目</div>
+    <div class="item">🧩 插件</div>
+    <div class="item">⚙️ 设置</div>
+  </aside>
+  <main class="main">
+    <h1>预览：02 桌宠插件</h1>
+    <div class="sub">这是模拟的 DSH 界面，右下角那只就是从插件包里真实加载出来的。</div>
+    <div class="grid">
+      <div class="card"><h4>上下文</h4><div>12.4k / 128k</div><div class="bar"><i style="width:10%"></i></div></div>
+      <div class="card"><h4>今日消耗</h4><div>¥0.37</div><div class="bar"><i style="width:24%"></i></div></div>
+      <div class="card"><h4>任务</h4><div>3 个进行中</div><div class="bar"><i style="width:62%"></i></div></div>
+    </div>
+    <div class="note">
+      点她会弹菜单：聊天 / 摸摸 / 设置。<br>
+      聊天走 <code>/api/&lt;id&gt;/chat</code> 代理，默认连本机 Ollama，<code>127.0.0.1:11434</code>。
+    </div>
+  </main>
+</div>
+
+<script>
+  // 模拟宿主的模块加载器
+  window.__ModuleLoader__ = {
+    load(spec) {
+      window.__z02spec = spec;
+      try {
+        spec.factory(function (name) { throw new Error("preview 没有提供模块: " + name); });
+      } catch (error) {
+        console.error("[preview] factory 执行失败", error);
+      }
+    }
+  };
+</script>
+<script>
+  const tag = document.createElement("script");
+  tag.src = "/pkg/zero02-pet/lib/client.js";
+  document.body.appendChild(tag);
+</script>
+<script>
+  const QS = new URLSearchParams(location.search);
+  if (QS.has("panel") || QS.has("skin") || QS.has("hide")) {
+    setTimeout(() => {
+      if (!window.__z02) return;
+      if (QS.has("skin")) window.__z02.applySkin(QS.get("skin"), false);
+      if (QS.has("hide")) window.__z02.hidePet();
+      if (QS.has("panel")) window.__z02.openPanel(QS.get("panel"));
+      if (QS.has("say")) window.__z02.sendMessage(QS.get("say"));
+    }, 600);
+  }
+  setTimeout(() => {
+    const r = (sel) => { const e = document.querySelector(sel); if (!e) return "none"; const b = e.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)].join(","); };
+    document.title = "RECT root=" + r(".z02-root") + " stage=" + r(".z02-stage") + " img=" + r(".z02-stage img") + " vh=" + window.innerHeight;
+  }, 800);
+</script>
+</body>
+</html>
